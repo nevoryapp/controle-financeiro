@@ -4,8 +4,10 @@ import { useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { FileText, Search, Download, ExternalLink, FileIcon } from 'lucide-react'
+import { FileText, Search, Download, ExternalLink, FileIcon, Loader2 } from 'lucide-react'
 import { formatDate } from '@/lib/utils'
+import { supabase } from '@/lib/supabase'
+import { toast } from '@/hooks/use-toast'
 import type { Transaction } from '@/types/database'
 
 interface NotasFiscaisProps {
@@ -15,6 +17,7 @@ interface NotasFiscaisProps {
 export function NotasFiscais({ transactions }: NotasFiscaisProps) {
   const [searchTerm, setSearchTerm] = useState('')
   const [filterMonth, setFilterMonth] = useState('all')
+  const [loadingFiles, setLoadingFiles] = useState<Set<string>>(new Set())
 
   // Filter transactions with files
   const transactionsWithFiles = transactions.filter(t => t.file_url)
@@ -45,12 +48,131 @@ export function NotasFiscais({ transactions }: NotasFiscaisProps) {
     return Array.from(months).sort().reverse()
   }
 
-  const handleDownload = (url: string, filename: string) => {
-    const link = document.createElement('a')
-    link.href = url
-    link.download = filename
-    link.target = '_blank'
-    link.click()
+  // Check if the file_url is a path (new format) or a full URL (legacy format)
+  const isFilePath = (url: string): boolean => {
+    // Paths are like: "user_id/timestamp.ext"
+    // URLs are like: "https://..."
+    return !url.startsWith('http')
+  }
+
+  // Generate a signed URL for private bucket files
+  const getSignedUrl = async (filePath: string): Promise<string | null> => {
+    if (!supabase) return null
+    
+    const { data, error } = await supabase.storage
+      .from('notas-fiscais')
+      .createSignedUrl(filePath, 3600) // 1 hour expiration
+    
+    if (error) {
+      console.error('Error generating signed URL:', error)
+      return null
+    }
+    
+    return data.signedUrl
+  }
+
+  const handleView = async (filePath: string, transactionId: string) => {
+    if (!supabase) {
+      toast({
+        title: 'Erro',
+        description: 'Supabase não está configurado.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    setLoadingFiles(prev => new Set(prev).add(transactionId))
+
+    try {
+      let url: string
+      
+      if (isFilePath(filePath)) {
+        // New format: generate signed URL
+        const signedUrl = await getSignedUrl(filePath)
+        if (!signedUrl) {
+          throw new Error('Não foi possível gerar o link do arquivo.')
+        }
+        url = signedUrl
+      } else {
+        // Legacy format: use URL directly (for backward compatibility)
+        url = filePath
+      }
+      
+      window.open(url, '_blank')
+    } catch (error) {
+      toast({
+        title: 'Erro ao visualizar',
+        description: error instanceof Error ? error.message : 'Erro desconhecido',
+        variant: 'destructive',
+      })
+    } finally {
+      setLoadingFiles(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(transactionId)
+        return newSet
+      })
+    }
+  }
+
+  const handleDownload = async (filePath: string, filename: string, transactionId: string) => {
+    if (!supabase) {
+      toast({
+        title: 'Erro',
+        description: 'Supabase não está configurado.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    setLoadingFiles(prev => new Set(prev).add(transactionId))
+
+    try {
+      let url: string
+      
+      if (isFilePath(filePath)) {
+        // New format: generate signed URL
+        const signedUrl = await getSignedUrl(filePath)
+        if (!signedUrl) {
+          throw new Error('Não foi possível gerar o link do arquivo.')
+        }
+        url = signedUrl
+      } else {
+        // Legacy format: use URL directly (for backward compatibility)
+        url = filePath
+      }
+      
+      // Fetch the file as a blob
+      const response = await fetch(url)
+      if (!response.ok) {
+        throw new Error('Falha ao baixar o arquivo.')
+      }
+      
+      const blob = await response.blob()
+      const blobUrl = URL.createObjectURL(blob)
+      
+      // Create download link
+      const link = document.createElement('a')
+      link.href = blobUrl
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      
+      // Clean up
+      URL.revokeObjectURL(blobUrl)
+    } catch (error) {
+      toast({
+        title: 'Erro ao baixar',
+        description: error instanceof Error ? error.message : 'Erro desconhecido',
+        variant: 'destructive',
+      })
+    } finally {
+      setLoadingFiles(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(transactionId)
+        return newSet
+      })
+    }
   }
 
   const getFileExtension = (url: string) => {
@@ -115,62 +237,76 @@ export function NotasFiscais({ transactions }: NotasFiscaisProps) {
         </Card>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredFiles.map((transaction) => (
-            <Card key={transaction.id} className="hover:shadow-md transition-shadow">
-              <CardHeader className="pb-2">
-                <div className="flex items-start justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 rounded-lg bg-primary/10">
-                      <FileIcon className="h-6 w-6 text-primary" />
+          {filteredFiles.map((transaction) => {
+            const isLoading = loadingFiles.has(transaction.id)
+            
+            return (
+              <Card key={transaction.id} className="hover:shadow-md transition-shadow">
+                <CardHeader className="pb-2">
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 rounded-lg bg-primary/10">
+                        <FileIcon className="h-6 w-6 text-primary" />
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground">
+                          {getFileExtension(transaction.file_url!)}
+                        </p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-xs text-muted-foreground">
-                        {getFileExtension(transaction.file_url!)}
-                      </p>
-                    </div>
+                    <span className={`px-2 py-1 rounded-full text-xs ${
+                      transaction.type === 'income' 
+                        ? 'bg-success/10 text-success' 
+                        : 'bg-destructive/10 text-destructive'
+                    }`}>
+                      {transaction.type === 'income' ? 'Entrada' : 'Saída'}
+                    </span>
                   </div>
-                  <span className={`px-2 py-1 rounded-full text-xs ${
-                    transaction.type === 'income' 
-                      ? 'bg-success/10 text-success' 
-                      : 'bg-destructive/10 text-destructive'
-                  }`}>
-                    {transaction.type === 'income' ? 'Entrada' : 'Saída'}
-                  </span>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-2">
-                  <p className="font-medium line-clamp-2">
-                    {transaction.description || transaction.category || 'Sem descrição'}
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    {formatDate(transaction.transaction_date)}
-                  </p>
-                  {transaction.category && (
-                    <p className="text-xs text-muted-foreground">
-                      Categoria: {transaction.category}
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-2">
+                    <p className="font-medium line-clamp-2">
+                      {transaction.description || transaction.category || 'Sem descrição'}
                     </p>
-                  )}
-                  <div className="flex gap-2 pt-2">
-                    <button
-                      onClick={() => window.open(transaction.file_url!, '_blank')}
-                      className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted transition-colors text-sm"
-                    >
-                      <ExternalLink className="h-4 w-4" />
-                      Visualizar
-                    </button>
-                    <button
-                      onClick={() => handleDownload(transaction.file_url!, getFileName(transaction.file_url!))}
-                      className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted transition-colors text-sm"
-                    >
-                      <Download className="h-4 w-4" />
-                      Baixar
-                    </button>
+                    <p className="text-sm text-muted-foreground">
+                      {formatDate(transaction.transaction_date)}
+                    </p>
+                    {transaction.category && (
+                      <p className="text-xs text-muted-foreground">
+                        Categoria: {transaction.category}
+                      </p>
+                    )}
+                    <div className="flex gap-2 pt-2">
+                      <button
+                        onClick={() => handleView(transaction.file_url!, transaction.id)}
+                        disabled={isLoading}
+                        className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isLoading ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <ExternalLink className="h-4 w-4" />
+                        )}
+                        Visualizar
+                      </button>
+                      <button
+                        onClick={() => handleDownload(transaction.file_url!, getFileName(transaction.file_url!), transaction.id)}
+                        disabled={isLoading}
+                        className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isLoading ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Download className="h-4 w-4" />
+                        )}
+                        Baixar
+                      </button>
+                    </div>
                   </div>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+                </CardContent>
+              </Card>
+            )
+          })}
         </div>
       )}
 

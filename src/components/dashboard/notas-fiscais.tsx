@@ -6,7 +6,6 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { FileText, Search, Download, ExternalLink, FileIcon, Loader2 } from 'lucide-react'
 import { formatDate } from '@/lib/utils'
-import { supabase } from '@/lib/supabase'
 import { toast } from '@/hooks/use-toast'
 import type { Transaction } from '@/types/database'
 
@@ -48,71 +47,11 @@ export function NotasFiscais({ transactions }: NotasFiscaisProps) {
     return Array.from(months).sort().reverse()
   }
 
-  // Extract file path from URL or return path as-is
-  // Handles both new format (path) and legacy format (full URL)
-  const extractFilePath = (url: string): string => {
-    // New format: "user_id/timestamp.ext" - return as-is
-    if (!url.startsWith('http')) {
-      return url
-    }
-    
-    // Legacy format: "https://xxx.supabase.co/storage/v1/object/public/notas-fiscais/user_id/file.pdf"
-    // Extract: "user_id/file.pdf"
-    try {
-      const urlObj = new URL(url)
-      const pathParts = urlObj.pathname.split('/')
-      // Find the bucket name and get everything after it
-      const bucketIndex = pathParts.findIndex(part => part === 'notas-fiscais')
-      if (bucketIndex !== -1 && bucketIndex < pathParts.length - 1) {
-        return pathParts.slice(bucketIndex + 1).join('/')
-      }
-    } catch {
-      console.error('Failed to parse URL:', url)
-    }
-    
-    // Fallback: return as-is
-    return url
-  }
-
-  // Generate a signed URL for private bucket files
-  const getSignedUrl = async (filePath: string): Promise<string | null> => {
-    if (!supabase) return null
-    
-    const { data, error } = await supabase.storage
-      .from('notas-fiscais')
-      .createSignedUrl(filePath, 3600) // 1 hour expiration
-    
-    if (error) {
-      console.error('Error generating signed URL:', error)
-      return null
-    }
-    
-    return data.signedUrl
-  }
-
-  const handleView = async (filePath: string, transactionId: string) => {
-    if (!supabase) {
-      toast({
-        title: 'Erro',
-        description: 'Supabase não está configurado.',
-        variant: 'destructive',
-      })
-      return
-    }
-
+  const handleView = (fileUrl: string, transactionId: string) => {
     setLoadingFiles(prev => new Set(prev).add(transactionId))
-
+    
     try {
-      // Extract the actual file path from URL or use as-is
-      const actualPath = extractFilePath(filePath)
-      
-      // Generate signed URL for the private bucket
-      const signedUrl = await getSignedUrl(actualPath)
-      if (!signedUrl) {
-        throw new Error('Não foi possível gerar o link do arquivo.')
-      }
-      
-      window.open(signedUrl, '_blank')
+      window.open(fileUrl, '_blank')
     } catch (error) {
       toast({
         title: 'Erro ao visualizar',
@@ -120,38 +59,22 @@ export function NotasFiscais({ transactions }: NotasFiscaisProps) {
         variant: 'destructive',
       })
     } finally {
-      setLoadingFiles(prev => {
-        const newSet = new Set(prev)
-        newSet.delete(transactionId)
-        return newSet
-      })
+      // Remove loading after a short delay (window.open is synchronous)
+      setTimeout(() => {
+        setLoadingFiles(prev => {
+          const newSet = new Set(prev)
+          newSet.delete(transactionId)
+          return newSet
+        })
+      }, 500)
     }
   }
 
-  const handleDownload = async (filePath: string, filename: string, transactionId: string) => {
-    if (!supabase) {
-      toast({
-        title: 'Erro',
-        description: 'Supabase não está configurado.',
-        variant: 'destructive',
-      })
-      return
-    }
-
+  const handleDownload = async (fileUrl: string, filename: string, transactionId: string) => {
     setLoadingFiles(prev => new Set(prev).add(transactionId))
 
     try {
-      // Extract the actual file path from URL or use as-is
-      const actualPath = extractFilePath(filePath)
-      
-      // Generate signed URL for the private bucket
-      const signedUrl = await getSignedUrl(actualPath)
-      if (!signedUrl) {
-        throw new Error('Não foi possível gerar o link do arquivo.')
-      }
-      
-      // Fetch the file as a blob
-      const response = await fetch(signedUrl)
+      const response = await fetch(fileUrl)
       if (!response.ok) {
         throw new Error('Falha ao baixar o arquivo.')
       }

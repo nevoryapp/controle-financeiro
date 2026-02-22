@@ -58,9 +58,12 @@ export function Lancamentos({ transactions, onRefresh }: LancamentosProps) {
           throw uploadError
         }
 
-        // Store the file path (not public URL) since bucket is private
-        // Signed URLs will be generated on demand when viewing/downloading
-        fileUrl = fileName
+        // Get the public URL for the uploaded file (bucket is public)
+        const { data: { publicUrl } } = supabase.storage
+          .from('notas-fiscais')
+          .getPublicUrl(fileName)
+
+        fileUrl = publicUrl
       }
 
       // Insert transaction

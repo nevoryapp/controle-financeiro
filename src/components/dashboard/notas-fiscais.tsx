@@ -48,11 +48,30 @@ export function NotasFiscais({ transactions }: NotasFiscaisProps) {
     return Array.from(months).sort().reverse()
   }
 
-  // Check if the file_url is a path (new format) or a full URL (legacy format)
-  const isFilePath = (url: string): boolean => {
-    // Paths are like: "user_id/timestamp.ext"
-    // URLs are like: "https://..."
-    return !url.startsWith('http')
+  // Extract file path from URL or return path as-is
+  // Handles both new format (path) and legacy format (full URL)
+  const extractFilePath = (url: string): string => {
+    // New format: "user_id/timestamp.ext" - return as-is
+    if (!url.startsWith('http')) {
+      return url
+    }
+    
+    // Legacy format: "https://xxx.supabase.co/storage/v1/object/public/notas-fiscais/user_id/file.pdf"
+    // Extract: "user_id/file.pdf"
+    try {
+      const urlObj = new URL(url)
+      const pathParts = urlObj.pathname.split('/')
+      // Find the bucket name and get everything after it
+      const bucketIndex = pathParts.findIndex(part => part === 'notas-fiscais')
+      if (bucketIndex !== -1 && bucketIndex < pathParts.length - 1) {
+        return pathParts.slice(bucketIndex + 1).join('/')
+      }
+    } catch {
+      console.error('Failed to parse URL:', url)
+    }
+    
+    // Fallback: return as-is
+    return url
   }
 
   // Generate a signed URL for private bucket files
@@ -84,21 +103,16 @@ export function NotasFiscais({ transactions }: NotasFiscaisProps) {
     setLoadingFiles(prev => new Set(prev).add(transactionId))
 
     try {
-      let url: string
+      // Extract the actual file path from URL or use as-is
+      const actualPath = extractFilePath(filePath)
       
-      if (isFilePath(filePath)) {
-        // New format: generate signed URL
-        const signedUrl = await getSignedUrl(filePath)
-        if (!signedUrl) {
-          throw new Error('Não foi possível gerar o link do arquivo.')
-        }
-        url = signedUrl
-      } else {
-        // Legacy format: use URL directly (for backward compatibility)
-        url = filePath
+      // Generate signed URL for the private bucket
+      const signedUrl = await getSignedUrl(actualPath)
+      if (!signedUrl) {
+        throw new Error('Não foi possível gerar o link do arquivo.')
       }
       
-      window.open(url, '_blank')
+      window.open(signedUrl, '_blank')
     } catch (error) {
       toast({
         title: 'Erro ao visualizar',
@@ -127,22 +141,17 @@ export function NotasFiscais({ transactions }: NotasFiscaisProps) {
     setLoadingFiles(prev => new Set(prev).add(transactionId))
 
     try {
-      let url: string
+      // Extract the actual file path from URL or use as-is
+      const actualPath = extractFilePath(filePath)
       
-      if (isFilePath(filePath)) {
-        // New format: generate signed URL
-        const signedUrl = await getSignedUrl(filePath)
-        if (!signedUrl) {
-          throw new Error('Não foi possível gerar o link do arquivo.')
-        }
-        url = signedUrl
-      } else {
-        // Legacy format: use URL directly (for backward compatibility)
-        url = filePath
+      // Generate signed URL for the private bucket
+      const signedUrl = await getSignedUrl(actualPath)
+      if (!signedUrl) {
+        throw new Error('Não foi possível gerar o link do arquivo.')
       }
       
       // Fetch the file as a blob
-      const response = await fetch(url)
+      const response = await fetch(signedUrl)
       if (!response.ok) {
         throw new Error('Falha ao baixar o arquivo.')
       }

@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { FileText, Search, Download, ExternalLink, FileIcon, Loader2 } from 'lucide-react'
 import { formatDate } from '@/lib/utils'
+import { supabase } from '@/lib/supabase'
 import { toast } from '@/hooks/use-toast'
 import type { Transaction } from '@/types/database'
 
@@ -47,11 +48,37 @@ export function NotasFiscais({ transactions }: NotasFiscaisProps) {
     return Array.from(months).sort().reverse()
   }
 
-  const handleView = (fileUrl: string, transactionId: string) => {
-    setLoadingFiles(prev => new Set(prev).add(transactionId))
+  // Check if the stored value is a path (new format) or a full URL
+  const isFilePath = (url: string): boolean => {
+    return !url.startsWith('http')
+  }
+
+  // Get the public URL for a file path
+  const getPublicUrl = (filePath: string): string => {
+    if (!supabase) return filePath
     
+    const { data: { publicUrl } } = supabase.storage
+      .from('notas-fiscais')
+      .getPublicUrl(filePath)
+    
+    return publicUrl
+  }
+
+  const handleView = async (fileUrl: string, transactionId: string) => {
+    setLoadingFiles(prev => new Set(prev).add(transactionId))
+
     try {
-      window.open(fileUrl, '_blank')
+      let url: string
+      
+      if (isFilePath(fileUrl)) {
+        // It's a path, get the public URL
+        url = getPublicUrl(fileUrl)
+      } else {
+        // It's already a URL, use it directly
+        url = fileUrl
+      }
+      
+      window.open(url, '_blank')
     } catch (error) {
       toast({
         title: 'Erro ao visualizar',
@@ -59,7 +86,6 @@ export function NotasFiscais({ transactions }: NotasFiscaisProps) {
         variant: 'destructive',
       })
     } finally {
-      // Remove loading after a short delay (window.open is synchronous)
       setTimeout(() => {
         setLoadingFiles(prev => {
           const newSet = new Set(prev)
@@ -74,7 +100,17 @@ export function NotasFiscais({ transactions }: NotasFiscaisProps) {
     setLoadingFiles(prev => new Set(prev).add(transactionId))
 
     try {
-      const response = await fetch(fileUrl)
+      let url: string
+      
+      if (isFilePath(fileUrl)) {
+        // It's a path, get the public URL
+        url = getPublicUrl(fileUrl)
+      } else {
+        // It's already a URL, use it directly
+        url = fileUrl
+      }
+      
+      const response = await fetch(url)
       if (!response.ok) {
         throw new Error('Falha ao baixar o arquivo.')
       }
